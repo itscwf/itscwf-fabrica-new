@@ -7,15 +7,17 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
-	"path"
 	"strings"
 	"syscall"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	"golang.org/x/crypto/bcrypt"
 
 	"github.com/itscwf/itscwf-fabrica-new/internal/config"
@@ -27,7 +29,11 @@ import (
 )
 
 //go:embed static
-var frontendFS embed.FS
+var rawFS embed.FS
+
+// frontendFS is the raw FS with "static/" prefix stripped so paths like
+// "index.html" work directly without needing to know the "static/" prefix.
+var frontendFS, _ = fs.Sub(rawFS, "static")
 
 func main() {
 	var (
@@ -139,7 +145,7 @@ func run(configPath, portOverride string, migrateOnly bool) error {
 		cfg.Hermes.KanbanBoard,
 	)
 
-	// Router com todas as rotas
+	// Gin serves everything (frontend SPA + API)
 	router := handlers.NewRouter(handlers.Deps{
 		Config:   cfg,
 		DB:       sqlDB,
@@ -150,17 +156,22 @@ func run(configPath, portOverride string, migrateOnly bool) error {
 		Recorder: handlers.NewRecorder(sqlDB),
 	})
 
-	// Sirve o frontend embarcado no mesmo servidor (SPA fallback)
-	frontendHandler := spaHandler(frontendFS)
+	// Wrap Gin with SPA: HTTP wrapper serves static files and SPA fallback,
+	// bypassing Gin's NoRoute handler which only handles API 404s.
+	handler := wrapWithSPA(router, frontendFS)
 
-	// Router principal com frontend na raiz
-	mux := http.NewServeMux()
-	mux.Handle("/", frontendHandler)
-	mux.Handle("/api/", router)
+	logger.Info("server_starting",
+		"service", fabrica.Name,
+		"version", fabrica.Version,
+		"addr", cfg.Addr(),
+		"env", cfg.Env,
+		"db_path", cfg.DBPath,
+		"frontend", "embedded",
+	)
 
 	srv := &http.Server{
 		Addr:         cfg.Addr(),
-		Handler:      mux,
+		Handler:      handler,
 		ReadTimeout:  cfg.ReadTimeout,
 		WriteTimeout: cfg.WriteTimeout,
 		IdleTimeout:  60 * time.Second,
@@ -168,14 +179,6 @@ func run(configPath, portOverride string, migrateOnly bool) error {
 
 	serverErrors := make(chan error, 1)
 	go func() {
-		logger.Info("server_starting",
-			"service", fabrica.Name,
-			"version", fabrica.Version,
-			"addr", srv.Addr,
-			"env", cfg.Env,
-			"db_path", cfg.DBPath,
-			"frontend", "embedded",
-		)
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			serverErrors <- err
 		}
@@ -200,27 +203,43 @@ func run(configPath, portOverride string, migrateOnly bool) error {
 	return nil
 }
 
-// spaHandler serves the embedded React SPA with fallback to index.html for client-side routing.
-func spaHandler(fsys embed.FS) http.Handler {
-	fileServer := http.FileServer(http.FS(fsys))
+// wrapWithSPA wraps a *gin.Engine with an HTTP handler that serves the embedded
+// SPA from the embed.FS for non-API routes. Since Gin's NoRoute intercepts
+// everything that isn't an explicit route, we serve SPA files at the top-level
+// http.Handler before falling through to Gin for API routes.
+func wrapWithSPA(ginRouter *gin.Engine, fsys fs.FS) http.Handler {
+	// Health check paths that Gin handles directly — no auth required.
+	healthPaths := map[string]bool{
+		"/health": true, "/healthz": true,
+		"/health/live": true, "/health/ready": true,
+	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fpath := path.Join("/", r.URL.Path)
-		// Try to serve the file
-		f, err := fsys.Open(fpath)
-		if err == nil {
-			f.Close()
-			fileServer.ServeHTTP(w, r)
+		// Let Gin handle all API routes and health checks
+		if strings.HasPrefix(r.URL.Path, "/api") || healthPaths[r.URL.Path] {
+			ginRouter.ServeHTTP(w, r)
 			return
 		}
-		// Fallback to index.html for SPA routes (not API routes)
-		if !strings.HasPrefix(r.URL.Path, "/api") {
-			index, err := fsys.Open("index.html")
-			if err == nil {
-				index.Close()
-				r.URL.Path = "/"
-			}
+		fpath := strings.TrimPrefix(r.URL.Path, "/")
+		if fpath == "" {
+			fpath = "index.html"
 		}
-		fileServer.ServeHTTP(w, r)
+		// Try to serve the static file
+		if f, err := fsys.Open(fpath); err == nil {
+			f.Close()
+			http.FileServer(http.FS(fsys)).ServeHTTP(w, r)
+			return
+		}
+		// Fallback: serve index.html for SPA client-side routing
+		f2, err2 := fsys.Open("index.html")
+		if err2 == nil {
+			defer f2.Close()
+			data, _ := io.ReadAll(f2)
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.Write(data)
+			return
+		}
+		// No static file found — let Gin try its routes (will hit NoRoute for unknown paths)
+		ginRouter.ServeHTTP(w, r)
 	})
 }
 
