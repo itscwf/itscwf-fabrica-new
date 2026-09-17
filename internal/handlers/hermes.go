@@ -165,6 +165,54 @@ func (h *hermesHandlers) TaskRuns(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"data": runs, "count": len(runs)})
 }
 
+// AgentsProfilesHandler returns Hermes profiles (from hermes profile list).
+func (h *hermesHandlers) AgentsProfilesHandler(c *gin.Context) {
+	if h.legacyClient == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{
+			"error": gin.H{"code": "unavailable", "message": "hermes client not configured"},
+		})
+		return
+	}
+	profiles, raw, err := h.legacyClient.AgentsProfiles(c.Request.Context())
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{
+			"error": gin.H{"code": "hermes_unavailable", "message": err.Error()},
+		})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"data":    profiles,
+		"count":   len(profiles),
+		"raw":     raw,
+		"source":  "hermes profile list",
+	})
+}
+
+// ProvidersHandler returns unique provider/model combinations from kanban tasks.
+func (h *hermesHandlers) ProvidersHandler(c *gin.Context) {
+	board := firstNonEmpty(c.Query("board"), h.defaultBoard)
+	if h.legacyClient == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{
+			"error": gin.H{"code": "unavailable", "message": "hermes client not configured"},
+		})
+		return
+	}
+	providers, raw, err := h.legacyClient.Providers(c.Request.Context(), board)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{
+			"error": gin.H{"code": "hermes_unavailable", "message": err.Error()},
+		})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"data":   providers,
+		"count":  len(providers),
+		"raw":    raw,
+		"board":  board,
+		"source": "hermes kanban list",
+	})
+}
+
 // Agents returns Hermes agent status via KanbanService, falling back to the
 // legacy HermesClient (plain `hermes status` with --json retry semantics).
 func (h *hermesHandlers) Agents(c *gin.Context) {

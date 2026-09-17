@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+	"unicode"
 )
 
 // CommandResult is a serialisable report of one subprocess invocation.
@@ -376,3 +377,100 @@ func decodeJSON(raw string, target any) error {
 // DecodeJSON is the exported form of decodeJSON, for tests that need to parse
 // CLI-shaped output the same way the production code does.
 func DecodeJSON(raw string, target any) error { return decodeJSON(raw, target) }
+
+// AgentsProfiles runs `hermes profile list` and parses the table output.
+func (h *HermesClient) AgentsProfiles(ctx context.Context) ([]map[string]any, string, error) {
+	runner := h.Runner
+	if runner == nil {
+		runner = &ExecRunner{Bin: "hermes", Timeout: 30 * time.Second}
+	}
+	result := runner.Run(ctx, "hermes", []string{"profile", "list"}, nil)
+
+	var profiles []map[string]any
+	for _, line := range strings.Split(result.Stdout, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		// Skip header, separator, and leading-blank lines
+		if strings.HasPrefix(trimmed, "Profile") || strings.HasPrefix(trimmed, "─") {
+			continue
+		}
+		// Data rows start with ◆ or a word character (not whitespace)
+		if !strings.HasPrefix(trimmed, "◆") && !unicode.IsLetter(rune(trimmed[0])) {
+			continue
+		}
+		fields := strings.Fields(trimmed)
+		if len(fields) < 3 {
+			continue
+		}
+		name := strings.TrimPrefix(fields[0], "◆")
+		model := fields[1]
+		gateway := fields[2]
+		alias := ""
+		if len(fields) > 3 && fields[3] != "—" {
+			alias = fields[3]
+		}
+		profiles = append(profiles, map[string]any{
+			"name":    name,
+			"model":   model,
+			"gateway": gateway,
+			"running": gateway == "running",
+			"alias":   alias,
+		})
+	}
+	return profiles, result.Stdout, nil
+}
+
+// Providers parses `hermes config` to extract configured API-key providers.
+func (h *HermesClient) Providers(ctx context.Context, board string) ([]map[string]any, string, error) {
+	runner := h.Runner
+	if runner == nil {
+		runner = &ExecRunner{Bin: "hermes", Timeout: 30 * time.Second}
+	}
+	result := runner.Run(ctx, "hermes", []string{"config"}, nil)
+
+	var providers []map[string]any
+	inSection := false
+	for _, line := range strings.Split(result.Stdout, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		// Detect API Keys section
+		if strings.Contains(trimmed, "API Keys") || strings.Contains(trimmed, "API-Key") {
+			inSection = true
+			continue
+		}
+		// Stop at next section
+		if inSection && (strings.HasPrefix(trimmed, "◆") || strings.HasPrefix(trimmed, "Model") || strings.HasPrefix(trimmed, "Display") || strings.HasPrefix(trimmed, "Terminal") || strings.HasPrefix(trimmed, "Timezone") || strings.HasPrefix(trimmed, "Context")) {
+			break
+		}
+		if inSection {
+			// Line like "  OpenRouter     sk-o...2d53" or "  OpenAI (STT/TTS) (not set)"
+			fullLine := strings.TrimSpace(line)
+			notSet := strings.Contains(fullLine, "(not set)")
+			parts := strings.Fields(fullLine)
+			if len(parts) >= 1 {
+				name := parts[0]
+				// Skip section headers that slipped through
+				if name == "Provider" || name == "Key" || name == "API" || name == "API-Key" || name == "◆" {
+					continue
+				}
+				// Handle multi-word names like "OpenAI (STT/TTS)" — join remaining parts as key hint
+				var keyHint string
+				if notSet {
+					keyHint = "(not set)"
+				} else if len(parts) > 1 {
+					keyHint = parts[len(parts)-1]
+				}
+				providers = append(providers, map[string]any{
+					"name":       name,
+					"configured": !notSet && keyHint != "",
+					"key_hint":   keyHint,
+				})
+			}
+		}
+	}
+	return providers, result.Stdout, nil
+}

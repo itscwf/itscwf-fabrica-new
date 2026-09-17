@@ -94,6 +94,8 @@ func registerAPIRoutes(api *gin.RouterGroup, deps Deps) {
 	authed.GET("/hermes/tasks/:id/runs", hermes.TaskRuns)
 	authed.POST("/hermes/tasks", hermes.CreateTask)
 	authed.GET("/hermes/agents", hermes.Agents)
+	authed.GET("/hermes/agents/profiles", hermes.AgentsProfilesHandler)
+	authed.GET("/hermes/providers", hermes.ProvidersHandler)
 	authed.GET("/hermes/crons", hermes.Crons)
 
 	stats := &statsHandlers{deps: &deps}
