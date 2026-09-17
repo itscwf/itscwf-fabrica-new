@@ -140,10 +140,8 @@ func run(configPath, portOverride string, migrateOnly bool) error {
 		cfg.Hermes.KanbanBoard, time.Duration(cfg.Hermes.TimeoutSecs)*time.Second,
 	)
 
-	kanban := fabrica.NewHTTPClient(
-		fabrica.KanbanAPIURL(),
-		cfg.Hermes.KanbanBoard,
-	)
+	// Usa o Hermes CLI diretamente (mesmo host, sem Docker bridge).
+	kanban := fabrica.NewKanbanExecAdapter(hermesClient)
 
 	// Gin serves everything (frontend SPA + API)
 	router := handlers.NewRouter(handlers.Deps{

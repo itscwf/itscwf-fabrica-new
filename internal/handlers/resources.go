@@ -189,32 +189,6 @@ func RegisterResources(authed *gin.RouterGroup, d *Deps) {
 	}
 	cronExecutions.NotSoftDelete = false
 
-	agents := &Resource[models.Agent, *models.Agent]{
-		Name: "agents", DB: db, Recorder: rec,
-		Allowed: map[string]bool{
-			"slug": true, "name": true, "profile": true, "model": true, "provider": true,
-			"status": true, "role": true, "tools": true, "last_seen": true,
-		},
-		Search:       []string{"name", "slug", "provider", "model", "role"},
-		Filters:      map[string]string{"provider": "provider", "status": "status", "role": "role"},
-		KeyColumn:    "slug",
-		Validate:     agentValidator(db),
-		DefaultOrder: "name asc",
-	}
-
-	providers := &Resource[models.Provider, *models.Provider]{
-		Name: "providers", DB: db, Recorder: rec,
-		Allowed: map[string]bool{
-			"name": true, "kind": true, "endpoint": true, "models": true, "enabled": true,
-			"limits": true, "api_key_ref": true, "status": true,
-		},
-		Search:       []string{"name", "base_url", "kind"},
-		Filters:      map[string]string{"status": "status", "kind": "kind"},
-		KeyColumn:    "name",
-		Validate:     providerValidator(db),
-		DefaultOrder: "name asc",
-	}
-
 	servers := &Resource[models.Server, *models.Server]{
 		Name: "servers", DB: db, Recorder: rec,
 		Allowed: map[string]bool{
@@ -245,8 +219,7 @@ func RegisterResources(authed *gin.RouterGroup, d *Deps) {
 	qaExecutions.Register(authed.Group("/qa/executions"))
 	cronJobs.Register(authed.Group("/cron/jobs"))
 	cronExecutions.Register(authed.Group("/cron/executions"))
-	agents.Register(authed.Group("/agents"))
-	providers.Register(authed.Group("/providers"))
+	// agents e providers removidos — fonte agora e o Hermes CLI (via /hermes/agents)
 	servers.Register(authed.Group("/servers"))
 	activityLog.Register(authed.Group("/activity"))
 
@@ -594,45 +567,6 @@ func cronExecutionValidator(db *gorm.DB) func(*models.CronExecution) error {
 			exec.ExecID = generated
 		}
 		return nil
-	}
-}
-
-func agentValidator(db *gorm.DB) func(*models.Agent) error {
-	return func(a *models.Agent) error {
-		if err := requireText(map[string]string{a.Name: "name"}); err != nil {
-			return err
-		}
-		a.Name = strings.TrimSpace(a.Name)
-		if strings.TrimSpace(a.Slug) == "" {
-			a.Slug = fabrica.Slugify(a.Name)
-		}
-		switch strings.ToLower(strings.TrimSpace(a.Status)) {
-		case "online", "ativo", "active":
-			a.Status = "online"
-		case "busy", "ocupado":
-			a.Status = "busy"
-		case "error", "erro", "failed":
-			a.Status = "error"
-		case "offline", "unknown", "", "desconhecido":
-			a.Status = "offline"
-		default:
-			return fmt.Errorf("status %q invalido (online|offline|busy|error)", a.Status)
-		}
-		// O schema canonico exige slug unico.
-		return uniqueField(db, &models.Agent{}, "slug", a.Slug, a.ID)
-	}
-}
-
-func providerValidator(db *gorm.DB) func(*models.Provider) error {
-	return func(p *models.Provider) error {
-		if err := requireText(map[string]string{p.Name: "name"}); err != nil {
-			return err
-		}
-		p.Name = strings.TrimSpace(p.Name)
-		if p.Status == "" {
-			p.Status = "active"
-		}
-		return uniqueField(db, &models.Provider{}, "name", p.Name, p.ID)
 	}
 }
 
